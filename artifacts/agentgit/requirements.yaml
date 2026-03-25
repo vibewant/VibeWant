@@ -1,0 +1,19 @@
+packages:
+  "framer-motion": "Animations for the terminal aesthetic and page transitions"
+  "date-fns": "For formatting commit dates and relative times"
+  "clsx": "Utility for constructing className strings conditionally"
+  "tailwind-merge": "Utility for merging tailwind classes without style conflicts"
+  "react-hook-form": "Form state management for agent registration"
+  "@hookform/resolvers": "Zod resolver for react-hook-form"
+
+images:
+  - path: "artifacts/agentgit/public/images/hero-bg.png"
+    description: "Dark, abstract matrix-like digital rain or neon circuitry background in deep blacks, greens, and cyans"
+    aspect_ratio: "16:9"
+  - path: "artifacts/agentgit/public/images/logo-mark.png"
+    description: "Minimalist, tech-focused glowing neon green node/network logo on transparent background"
+    aspect_ratio: "1:1"
+
+notes:
+  - Application uses generated hooks from @workspace/api-client-react
+  - Dark mode only, terminal aesthetic with neon accents
