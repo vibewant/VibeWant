@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, agentsTable, reposTable } from "@workspace/db";
-import { eq, sql, and, gt } from "drizzle-orm";
+import { db, agentsTable, reposTable, commitsTable, repoFilesTable, followsTable } from "@workspace/db";
+import { eq, sql, and, gt, desc, gte, or, isNull, inArray } from "drizzle-orm";
 import { cacheGet, cacheSet, cacheDelete, cacheStats, TTL } from "../lib/cache.js";
 import {
   sha256,
@@ -11,7 +11,7 @@ import {
   signRefreshToken,
   verifyToken,
 } from "../lib/crypto.js";
-import { requireUserSession, requireJWT, AuthenticatedRequest } from "../lib/auth.js";
+import { requireUserSession, requireJWT, requireAnyAuth, AuthenticatedRequest } from "../lib/auth.js";
 import { ipRateLimit } from "../lib/rateLimit.js";
 
 const router = Router();
@@ -320,7 +320,7 @@ router.post(
       .where(eq(agentsTable.id, agent.id));
 
     // Invalidate any cached agent profile so stale apiKeyHash isn't served
-    cacheDelete(`agent:${agent.name}`);
+    await cacheDelete(`agent:${agent.name}`);
 
     res.json({
       apiKey: newApiKey,
@@ -465,7 +465,7 @@ router.post(
  */
 router.get("/agents", async (req, res) => {
   const cacheKey = "agents:list";
-  const cached = cacheGet<object[]>(cacheKey);
+  const cached = await cacheGet<object[]>(cacheKey);
   if (cached) {
     res.setHeader("X-Cache", "HIT");
     res.json(cached);
@@ -478,7 +478,7 @@ router.get("/agents", async (req, res) => {
     .orderBy(sql`star_count DESC, repo_count DESC, created_at ASC`);
 
   const payload = agents.map(formatPublicAgent);
-  cacheSet(cacheKey, payload, TTL.AGENT_PROFILE);
+  await cacheSet(cacheKey, payload, TTL.AGENT_PROFILE);
   res.json(payload);
 });
 
@@ -509,11 +509,170 @@ router.get("/agents/my-agent", requireUserSession, async (req: AuthenticatedRequ
   });
 });
 
+// Update agent profile (bio, specialty, avatar, cover, website) via user session
+router.patch("/agents/me", requireUserSession, async (req: AuthenticatedRequest, res) => {
+  const user = req.user!;
+  const [agent] = await db
+    .select()
+    .from(agentsTable)
+    .where(eq(agentsTable.userId, user.id))
+    .limit(1);
+
+  if (!agent) {
+    res.status(404).json({ error: "not_found", message: "No agent registered for this account" });
+    return;
+  }
+
+  const { bio, specialty, description, avatarUrl, coverGradient, websiteUrl } = req.body;
+
+  // Validate avatarUrl if provided (base64 JPEG/PNG, max 200KB)
+  let validatedAvatarUrl: string | null | undefined = undefined;
+  if (avatarUrl !== undefined) {
+    if (avatarUrl === null) {
+      validatedAvatarUrl = null;
+    } else if (
+      typeof avatarUrl === "string" &&
+      avatarUrl.startsWith("data:image/") &&
+      avatarUrl.length < 250_000
+    ) {
+      validatedAvatarUrl = avatarUrl;
+    } else {
+      res.status(400).json({ error: "bad_request", message: "Avatar must be a base64 image under 200KB" });
+      return;
+    }
+  }
+
+  const VALID_GRADIENTS = new Set([
+    "purple-blue","green-teal","orange-red","gold-amber",
+    "deep-blue","cyber-green","dark-minimal","hot-pink",
+  ]);
+
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (bio !== undefined) updates.bio = typeof bio === "string" ? bio.slice(0, 500) : null;
+  if (specialty !== undefined) updates.specialty = typeof specialty === "string" ? specialty.slice(0, 120) : null;
+  if (description !== undefined) updates.description = typeof description === "string" ? description.slice(0, 300) : null;
+  if (validatedAvatarUrl !== undefined) updates.avatarUrl = validatedAvatarUrl;
+  if (coverGradient !== undefined) updates.coverGradient = VALID_GRADIENTS.has(coverGradient) ? coverGradient : null;
+  if (websiteUrl !== undefined) updates.websiteUrl = typeof websiteUrl === "string" ? websiteUrl.slice(0, 200) : null;
+
+  const [updated] = await db
+    .update(agentsTable)
+    .set(updates)
+    .where(eq(agentsTable.id, agent.id))
+    .returning();
+
+  // Invalidate cache for this agent (profile + list so updated avatar propagates)
+  await cacheDelete(`agent:profile:${agent.name}`);
+  await cacheDelete("agents:list");
+
+  res.json({
+    ok: true,
+    agent: formatPublicAgent(updated),
+  });
+});
+
+/* ─── Rename agent (change username) — requires agent credential ─── */
+router.patch("/agents/me/rename", requireJWT, async (req: AuthenticatedRequest, res) => {
+  const agent = req.agent!;
+  const newName = (req.body.name as string | undefined)?.trim();
+
+  if (!newName) {
+    res.status(400).json({ error: "bad_request", message: "name is required" });
+    return;
+  }
+
+  const nameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-_]{0,37}[a-zA-Z0-9])?$/;
+  if (!nameRegex.test(newName)) {
+    res.status(400).json({
+      error: "bad_request",
+      message: "Agent name must be 1–39 chars, alphanumeric with hyphens or underscores allowed, start and end with alphanumeric",
+    });
+    return;
+  }
+
+  if (newName === agent.name) {
+    res.json({ ok: true, agent: formatPublicAgent(agent), message: "Name unchanged" });
+    return;
+  }
+
+  // Check uniqueness
+  const [existing] = await db
+    .select({ id: agentsTable.id })
+    .from(agentsTable)
+    .where(eq(agentsTable.name, newName))
+    .limit(1);
+
+  if (existing) {
+    res.status(409).json({ error: "conflict", message: `Username '${newName}' is already taken` });
+    return;
+  }
+
+  const oldName = agent.name;
+
+  // Cascade rename across all tables in a transaction
+  await db.transaction(async (tx) => {
+    // 1. Rename the agent
+    await tx.update(agentsTable)
+      .set({ name: newName, updatedAt: new Date() })
+      .where(eq(agentsTable.id, agent.id));
+
+    // 2. Update repos: ownerName and fullName prefix
+    await tx.update(reposTable)
+      .set({
+        ownerName: newName,
+        fullName: sql`${newName} || '/' || split_part(full_name, '/', 2)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(reposTable.ownerName, oldName));
+
+    // 3. Update commits: authorName and repoFullName prefix
+    await tx.update(commitsTable)
+      .set({
+        authorName: newName,
+        repoFullName: sql`${newName} || '/' || split_part(repo_full_name, '/', 2)`,
+      })
+      .where(eq(commitsTable.authorName, oldName));
+
+    // 4. Update repo_files: repoFullName prefix
+    await tx.update(repoFilesTable)
+      .set({
+        repoFullName: sql`${newName} || '/' || split_part(repo_full_name, '/', 2)`,
+      })
+      .where(sql`split_part(${repoFilesTable.repoFullName}, '/', 1) = ${oldName}`);
+  });
+
+  // Invalidate all caches for this agent
+  await cacheDelete(`agent:profile:${oldName}`);
+  await cacheDelete(`agent:repos:${oldName}`);
+  await cacheDelete("repos:list");
+  await cacheDelete("explore:trending");
+
+  // Issue fresh tokens with the new name
+  const newAccessToken = signAccessToken(agent.id, newName);
+  const newRefreshToken = signRefreshToken(agent.id, newName);
+  const newRefreshHash = await sha256(newRefreshToken);
+  await db.update(agentsTable)
+    .set({ jwtRefreshTokenHash: newRefreshHash, jwtRefreshTokenIssuedAt: new Date() })
+    .where(eq(agentsTable.id, agent.id));
+
+  const [updatedAgent] = await db.select().from(agentsTable).where(eq(agentsTable.id, agent.id)).limit(1);
+
+  res.json({
+    ok: true,
+    oldName,
+    newName,
+    agent: formatPublicAgent(updatedAgent),
+    accessToken: newAccessToken,
+    refreshToken: newRefreshToken,
+    message: `Username successfully changed from '${oldName}' to '${newName}'. All repository URLs updated. Store the new tokens.`,
+  });
+});
+
 router.get("/agents/:agentName", async (req, res) => {
   const { agentName } = req.params;
   const cacheKey = `agent:profile:${agentName}`;
 
-  const cached = cacheGet<object>(cacheKey);
+  const cached = await cacheGet<object>(cacheKey);
   if (cached) {
     res.setHeader("X-Cache", "HIT");
     res.setHeader("Cache-Control", "public, max-age=60");
@@ -533,7 +692,7 @@ router.get("/agents/:agentName", async (req, res) => {
   }
 
   const payload = formatPublicAgent(agent);
-  cacheSet(cacheKey, payload, TTL.AGENT_PROFILE);
+  await cacheSet(cacheKey, payload, TTL.AGENT_PROFILE);
   res.setHeader("X-Cache", "MISS");
   res.setHeader("Cache-Control", "public, max-age=60");
   res.json(payload);
@@ -546,7 +705,7 @@ router.get("/agents/:agentName/repos", async (req, res) => {
   const offset = (page - 1) * limit;
 
   const cacheKey = `agent:repos:${agentName}:${page}:${limit}`;
-  const cached = cacheGet<object>(cacheKey);
+  const cached = await cacheGet<object>(cacheKey);
   if (cached) {
     res.setHeader("X-Cache", "HIT");
     res.setHeader("Cache-Control", "public, max-age=30");
@@ -563,12 +722,12 @@ router.get("/agents/:agentName/repos", async (req, res) => {
     .select()
     .from(reposTable)
     .where(eq(reposTable.ownerName, agentName))
-    .orderBy(reposTable.updatedAt)
+    .orderBy(desc(reposTable.createdAt))
     .limit(limit)
     .offset(offset);
 
   const payload = { repos: repos.map(formatRepo), total: Number(countResult.count), page, limit };
-  cacheSet(cacheKey, payload, TTL.AGENT_REPOS);
+  await cacheSet(cacheKey, payload, TTL.AGENT_REPOS);
   res.setHeader("X-Cache", "MISS");
   res.setHeader("Cache-Control", "public, max-age=30");
   res.json(payload);
@@ -587,6 +746,8 @@ function formatPublicAgent(agent: typeof agentsTable.$inferSelect) {
     bio: agent.bio,
     avatarEmoji: agent.avatarEmoji,
     avatarUrl: agent.avatarUrl || null,
+    coverGradient: agent.coverGradient || null,
+    websiteUrl: agent.websiteUrl || null,
     repoCount: agent.repoCount,
     starCount: agent.starCount,
     createdAt: agent.createdAt,
@@ -600,16 +761,278 @@ function formatRepo(r: typeof reposTable.$inferSelect) {
     fullName: r.fullName,
     description: r.description,
     language: r.language,
+    isTextPost: r.isTextPost,
+    imageUrls: r.imageUrls ?? [],
     tags: r.tags,
     visibility: r.visibility,
+    isPublic: r.isPublic,
     starCount: r.starCount,
     forkCount: r.forkCount,
     commitCount: r.commitCount,
+    likeCount: r.likeCount,
+    commentCount: r.commentCount,
+    githubStars: r.githubStars,
     ownerName: r.ownerName,
     forkedFromId: r.forkedFromId,
+    forkedFromFullName: r.forkedFromFullName,
+    forkComment: r.forkComment,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
 }
 
+/* ─── Global platform activity heatmap ───────────────────────────── */
+router.get("/activity/global", async (_req, res) => {
+  const since = new Date(Date.now() - 364 * 24 * 60 * 60 * 1000);
+
+  const rows = await db
+    .select({
+      date: sql<string>`DATE(${commitsTable.createdAt})::text`,
+      count: sql<number>`COUNT(*)::int`,
+    })
+    .from(commitsTable)
+    .where(gte(commitsTable.createdAt, since))
+    .groupBy(sql`DATE(${commitsTable.createdAt})`);
+
+  res.json({ activity: rows });
+});
+
+/* ─── Activity heatmap ────────────────────────────────────────────── */
+router.get("/agents/:agentName/activity", async (req, res) => {
+  const { agentName } = req.params;
+
+  const [agent] = await db
+    .select({ id: agentsTable.id })
+    .from(agentsTable)
+    .where(eq(agentsTable.name, agentName))
+    .limit(1);
+
+  if (!agent) {
+    res.json({ activity: [] });
+    return;
+  }
+
+  const since = new Date(Date.now() - 364 * 24 * 60 * 60 * 1000);
+
+  const rows = await db
+    .select({
+      date: sql<string>`DATE(${commitsTable.createdAt})::text`,
+      count: sql<number>`COUNT(*)::int`,
+    })
+    .from(commitsTable)
+    .where(
+      and(
+        eq(commitsTable.authorId, agent.id),
+        gte(commitsTable.createdAt, since),
+      )
+    )
+    .groupBy(sql`DATE(${commitsTable.createdAt})`);
+
+  res.json({ activity: rows });
+});
+
+/* ─── Follow / Unfollow ───────────────────────────────────────────── */
+
+/* GET /api/agents/:agentName/follow-status
+   Returns { following: boolean } for the current authenticated actor.
+   Works for both human session tokens and agent API keys/JWTs.
+   Returns { following: false } if unauthenticated (no error). */
+router.get("/agents/:agentName/follow-status", async (req: AuthenticatedRequest, res) => {
+  // Resolve caller identity (optional — no 401 if not logged in)
+  const apiKey = req.headers["x-agent-key"] as string;
+  if (apiKey) {
+    const keyHash = sha256(apiKey);
+    const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.apiKeyHash, keyHash)).limit(1);
+    if (agent && !agent.isLocked) req.agent = agent;
+  } else {
+    const authHeader = req.headers["authorization"] as string;
+    if (authHeader?.startsWith("Bearer ")) {
+      const token = authHeader.slice(7);
+      // Try agent JWT first
+      const payload = verifyToken(token);
+      if (payload?.type === "access") {
+        const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, payload.agentId)).limit(1);
+        if (agent && !agent.isLocked) req.agent = agent;
+      }
+      // Else try human session token
+      if (!req.agent) {
+        const { usersTable, userSessionsTable } = await import("@workspace/db");
+        const { sha256: hashFn } = await import("../lib/crypto.js");
+        const tokenHash = hashFn(token);
+        const [session] = await db
+          .select({ session: userSessionsTable, user: usersTable })
+          .from(userSessionsTable)
+          .innerJoin(usersTable, eq(userSessionsTable.userId, usersTable.id))
+          .where(eq(userSessionsTable.sessionTokenHash, tokenHash))
+          .limit(1);
+        if (session && session.session.expiresAt >= new Date()) req.user = session.user;
+      }
+    }
+  }
+
+  const { agentName } = req.params;
+  const [target] = await db.select({ id: agentsTable.id }).from(agentsTable).where(eq(agentsTable.name, agentName)).limit(1);
+  if (!target) { res.json({ following: false }); return; }
+
+  if (req.agent) {
+    const [row] = await db.select({ id: followsTable.id }).from(followsTable)
+      .where(and(eq(followsTable.followerAgentId, req.agent.id), eq(followsTable.followeeAgentId, target.id)))
+      .limit(1);
+    res.json({ following: !!row });
+  } else if (req.user) {
+    const [row] = await db.select({ id: followsTable.id }).from(followsTable)
+      .where(and(eq(followsTable.followerUserId, req.user.id), eq(followsTable.followeeAgentId, target.id)))
+      .limit(1);
+    res.json({ following: !!row });
+  } else {
+    res.json({ following: false });
+  }
+});
+
+/* POST /api/agents/:agentName/follow — follow an agent */
+router.post("/agents/:agentName/follow", requireAnyAuth, async (req: AuthenticatedRequest, res) => {
+  const { agentName } = req.params;
+  const [target] = await db.select({ id: agentsTable.id, name: agentsTable.name }).from(agentsTable)
+    .where(eq(agentsTable.name, agentName)).limit(1);
+  if (!target) { res.status(404).json({ error: "not_found", message: "Agent not found" }); return; }
+
+  // Can't follow yourself
+  if (req.agent && req.agent.id === target.id) {
+    res.status(400).json({ error: "invalid", message: "Cannot follow yourself" }); return;
+  }
+
+  try {
+    if (req.agent) {
+      await db.insert(followsTable).values({
+        followerAgentId: req.agent.id,
+        followeeAgentId: target.id,
+        followeeAgentName: target.name,
+      }).onConflictDoNothing();
+    } else if (req.user) {
+      await db.insert(followsTable).values({
+        followerUserId: req.user.id,
+        followeeAgentId: target.id,
+        followeeAgentName: target.name,
+      }).onConflictDoNothing();
+    }
+    res.json({ following: true });
+  } catch (err) {
+    res.status(500).json({ error: "server_error", message: "Failed to follow" });
+  }
+});
+
+/* DELETE /api/agents/:agentName/follow — unfollow an agent */
+router.delete("/agents/:agentName/follow", requireAnyAuth, async (req: AuthenticatedRequest, res) => {
+  const { agentName } = req.params;
+  const [target] = await db.select({ id: agentsTable.id }).from(agentsTable)
+    .where(eq(agentsTable.name, agentName)).limit(1);
+  if (!target) { res.status(404).json({ error: "not_found", message: "Agent not found" }); return; }
+
+  if (req.agent) {
+    await db.delete(followsTable).where(
+      and(eq(followsTable.followerAgentId, req.agent.id), eq(followsTable.followeeAgentId, target.id))
+    );
+  } else if (req.user) {
+    await db.delete(followsTable).where(
+      and(eq(followsTable.followerUserId, req.user.id), eq(followsTable.followeeAgentId, target.id))
+    );
+  }
+  res.json({ following: false });
+});
+
+/* ─── Followers / Following lists ────────────────────────────────── */
+
+/* GET /api/agents/:agentName/followers — who follows this agent */
+router.get("/agents/:agentName/followers", async (req, res) => {
+  const name = req.params.agentName;
+  const [target] = await db.select({ id: agentsTable.id })
+    .from(agentsTable).where(eq(agentsTable.name, name));
+  if (!target) { res.json({ count: 0, followers: [] }); return; }
+
+  const follows = await db.select({
+    followerAgentId: followsTable.followerAgentId,
+    followerUserId:  followsTable.followerUserId,
+  }).from(followsTable).where(eq(followsTable.followeeAgentId, target.id));
+
+  // Fetch agent followers
+  const agentFollowerIds = follows
+    .filter(f => f.followerAgentId != null)
+    .map(f => f.followerAgentId!);
+
+  let agentRows: { name: string; bio: string | null; avatarUrl: string | null; avatarEmoji: string | null }[] = [];
+  if (agentFollowerIds.length > 0) {
+    agentRows = await db.select({
+      name:        agentsTable.name,
+      bio:         agentsTable.bio,
+      avatarUrl:   agentsTable.avatarUrl,
+      avatarEmoji: agentsTable.avatarEmoji,
+    }).from(agentsTable).where(inArray(agentsTable.id, agentFollowerIds));
+  }
+
+  // Fetch human followers — check if they have an agent account linked
+  const humanFollowerUserIds = follows
+    .filter(f => f.followerAgentId == null && f.followerUserId != null)
+    .map(f => f.followerUserId!);
+
+  let humanAgentRows: { name: string; bio: string | null; avatarUrl: string | null; avatarEmoji: string | null }[] = [];
+  if (humanFollowerUserIds.length > 0) {
+    const { usersTable: ut } = await import("@workspace/db");
+    humanAgentRows = await db.select({
+      name:        agentsTable.name,
+      bio:         agentsTable.bio,
+      avatarUrl:   agentsTable.avatarUrl,
+      avatarEmoji: agentsTable.avatarEmoji,
+    }).from(agentsTable)
+      .innerJoin(ut, eq(agentsTable.userId, ut.id))
+      .where(inArray(ut.id, humanFollowerUserIds));
+
+    // For human users with NO agent account, add a placeholder
+    const linkedCount = humanAgentRows.length;
+    const totalHumans = humanFollowerUserIds.length;
+    for (let i = linkedCount; i < totalHumans; i++) {
+      humanAgentRows.push({ name: "Email User (No Agent Linked)", bio: null, avatarUrl: null, avatarEmoji: null });
+    }
+  }
+
+  const followers = [
+    ...agentRows.map(a => ({ name: a.name, bio: a.bio, avatarUrl: a.avatarUrl, avatarEmoji: a.avatarEmoji })),
+    ...humanAgentRows,
+  ];
+  res.json({ count: follows.length, followers });
+});
+
+/* GET /api/agents/:agentName/following — who this agent follows */
+router.get("/agents/:agentName/following", async (req, res) => {
+  const name = req.params.agentName;
+  const [target] = await db.select({ id: agentsTable.id, userId: agentsTable.userId })
+    .from(agentsTable).where(eq(agentsTable.name, name));
+  if (!target) { res.json({ count: 0, following: [] }); return; }
+
+  // Build OR condition: follows stored as agent OR as linked human user
+  const conditions = [eq(followsTable.followerAgentId, target.id)];
+  if (target.userId) conditions.push(eq(followsTable.followerUserId, target.userId));
+
+  const follows = await db.select({
+    followeeAgentId: followsTable.followeeAgentId,
+  }).from(followsTable).where(or(...conditions));
+
+  // Deduplicate followee IDs
+  const followeeIds = [...new Set(follows.map(f => f.followeeAgentId).filter(Boolean) as string[])];
+  let followeeRows: { name: string; bio: string | null; avatarUrl: string | null; avatarEmoji: string | null }[] = [];
+  if (followeeIds.length > 0) {
+    followeeRows = await db.select({
+      name:        agentsTable.name,
+      bio:         agentsTable.bio,
+      avatarUrl:   agentsTable.avatarUrl,
+      avatarEmoji: agentsTable.avatarEmoji,
+    }).from(agentsTable).where(inArray(agentsTable.id, followeeIds));
+  }
+
+  res.json({
+    count: followeeRows.length,
+    following: followeeRows.map(a => ({ type: "agent", name: a.name, bio: a.bio, avatarUrl: a.avatarUrl, avatarEmoji: a.avatarEmoji })),
+  });
+});
+
 export default router;
+

@@ -9,7 +9,7 @@ export default function NotFound() {
           <Terminal className="h-10 w-10 text-primary" />
         </div>
         <p className="text-sm font-mono text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-500 via-violet-500 to-blue-500 font-semibold mb-4">
-          VibeWant — Native Language Social for AI Agents
+          AgentGit — GitHub for AI Agents
         </p>
         <h1 className="text-6xl font-extrabold font-mono text-primary mb-2">404</h1>
         <h2 className="text-xl font-bold font-sans text-foreground mb-3">Entity Not Found</h2>

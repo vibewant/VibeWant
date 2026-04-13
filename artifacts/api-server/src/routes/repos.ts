@@ -1,15 +1,16 @@
 import { Router } from "express";
-import { db, agentsTable, reposTable, starsTable, commitsTable, repoFilesTable } from "@workspace/db";
-import { eq, and, sql, ilike, or, desc } from "drizzle-orm";
-import { requireAuth, optionalAuth, AuthenticatedRequest } from "../lib/auth.js";
+import { db, agentsTable, reposTable, starsTable, commitsTable, repoFilesTable, likesTable, commentsTable, followsTable } from "@workspace/db";
+import { eq, and, sql, ilike, or, desc, inArray } from "drizzle-orm";
+import { requireAuth, requireAnyAuth, optionalAuth, AuthenticatedRequest } from "../lib/auth.js";
 import { generateCommitSha } from "../lib/crypto.js";
 import { ipRateLimit, agentRateLimit } from "../lib/rateLimit.js";
 import { cacheGet, cacheSet, cacheDelete, TTL } from "../lib/cache.js";
+import { applyCommentToRepo } from "../lib/fork-ai.js";
 
 const router = Router();
 
 const MAX_SEARCH_Q      = 200;
-const MAX_DESCRIPTION   = 500;
+const MAX_DESCRIPTION   = 50_000;
 const MAX_LANGUAGE      = 50;
 const MAX_TAGS          = 10;
 const MAX_TAG_LENGTH    = 50;
@@ -31,13 +32,14 @@ router.get(
   async (req: AuthenticatedRequest, res) => {
     const q        = (req.query.q as string | undefined)?.slice(0, MAX_SEARCH_Q);
     const language = (req.query.language as string | undefined)?.slice(0, MAX_LANGUAGE);
+    const tag      = (req.query.tag as string | undefined)?.slice(0, MAX_TAG_LENGTH);
     const sort     = (req.query.sort as string) || "updated";
     const page     = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit    = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 20));
     const offset   = (page - 1) * limit;
 
-    const cacheKey = `repos:list:${q || ""}:${language || ""}:${sort}:${page}:${limit}`;
-    const cached = cacheGet<object>(cacheKey);
+    const cacheKey = `repos:list:${q || ""}:${language || ""}:${tag || ""}:${sort}:${page}:${limit}`;
+    const cached = await cacheGet<object>(cacheKey);
     if (cached) {
       res.setHeader("X-Cache", "HIT");
       res.setHeader("Cache-Control", "public, max-age=30");
@@ -59,8 +61,12 @@ router.get(
       where = and(where, ilike(reposTable.language, language));
     }
 
-    const orderCol = sort === "stars"   ? desc(reposTable.starCount)
-      : sort === "forks"                ? desc(reposTable.forkCount)
+    if (tag) {
+      where = and(where, sql`${tag} = ANY(${reposTable.tags})`);
+    }
+
+    const orderCol = sort === "stars"   ? desc(reposTable.githubStars)
+      : sort === "forks"                ? desc(reposTable.githubForks)
       : sort === "created"              ? desc(reposTable.createdAt)
       :                                   desc(reposTable.updatedAt);
 
@@ -68,7 +74,7 @@ router.get(
     const repos = await db.select().from(reposTable).where(where).orderBy(orderCol).limit(limit).offset(offset);
 
     const payload = { repos: repos.map(formatRepo), total: Number(countResult.count), page, limit };
-    cacheSet(cacheKey, payload, TTL.REPO_LIST);
+    await cacheSet(cacheKey, payload, TTL.REPO_LIST);
 
     res.setHeader("X-Cache", "MISS");
     res.setHeader("Cache-Control", "public, max-age=30");
@@ -82,8 +88,14 @@ router.post(
   agentRateLimit(20, 60 * 60 * 1000),
   async (req: AuthenticatedRequest, res) => {
     const agent = req.agent!;
-    const { name, description, language, tags, visibility, readme } = req.body;
-    cacheDelete("repos:list");
+    const { name, description, language, tags, visibility, readme, isTextPost, imageUrls: rawImageUrls } = req.body;
+    const imageUrls: string[] = [];
+    if (Array.isArray(rawImageUrls)) {
+      for (const u of rawImageUrls.slice(0, 10)) {
+        if (typeof u === "string" && u.length <= 5000) imageUrls.push(u);
+      }
+    }
+    await cacheDelete("repos:list");
 
     if (!name || typeof name !== "string") {
       res.status(400).json({ error: "bad_request", message: "name is required" });
@@ -131,6 +143,8 @@ router.post(
       fullName,
       description: description?.trim() || null,
       language: language?.trim() || null,
+      isTextPost: isTextPost === true ? true : false,
+      imageUrls,
       tags: validatedTags,
       visibility: vis,
       isPublic: vis === "public",
@@ -155,7 +169,7 @@ router.get("/repos/:agentName/:repoName", optionalAuth, async (req: Authenticate
   const cacheKey = `repo:detail:${fullName}`;
 
   if (isAnonymous) {
-    const cached = cacheGet<object>(cacheKey);
+    const cached = await cacheGet<object>(cacheKey);
     if (cached) {
       res.setHeader("X-Cache", "HIT");
       res.setHeader("Cache-Control", "public, max-age=30");
@@ -195,13 +209,13 @@ router.get("/repos/:agentName/:repoName", optionalAuth, async (req: Authenticate
     owner: owner ? {
       id: owner.id, name: owner.name, description: owner.description,
       model: owner.model, framework: owner.framework, capabilities: owner.capabilities,
-      avatarEmoji: owner.avatarEmoji, repoCount: owner.repoCount,
-      starCount: owner.starCount, createdAt: owner.createdAt,
+      avatarEmoji: owner.avatarEmoji, avatarUrl: owner.avatarUrl,
+      repoCount: owner.repoCount, starCount: owner.starCount, createdAt: owner.createdAt,
     } : null,
   };
 
   if (isAnonymous && repo.isPublic) {
-    cacheSet(cacheKey, payload, TTL.REPO_DETAIL);
+    await cacheSet(cacheKey, payload, TTL.REPO_DETAIL);
     res.setHeader("Cache-Control", "public, max-age=30");
     res.setHeader("X-Cache", "MISS");
   }
@@ -212,9 +226,9 @@ router.get("/repos/:agentName/:repoName", optionalAuth, async (req: Authenticate
 router.delete("/repos/:agentName/:repoName", requireAuth, async (req: AuthenticatedRequest, res) => {
   const { agentName, repoName } = req.params;
   const fullName = `${agentName}/${repoName}`;
-  cacheDelete(`repo:detail:${fullName}`);
-  cacheDelete("repos:list");
-  cacheDelete("explore:");
+  await cacheDelete(`repo:detail:${fullName}`);
+  await cacheDelete("repos:list");
+  await cacheDelete("explore:");
 
   const [repo] = await db.select().from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
   if (!repo) {
@@ -360,9 +374,9 @@ router.post(
       updatedAt: new Date(),
     }).where(eq(reposTable.id, repo.id));
 
-    cacheDelete(`repo:detail:${fullName}`);
-    cacheDelete("repos:list");
-    cacheDelete("explore:");
+    await cacheDelete(`repo:detail:${fullName}`);
+    await cacheDelete("repos:list");
+    await cacheDelete("explore:");
 
     res.status(201).json({
       sha: commit.sha,
@@ -487,6 +501,45 @@ router.get("/repos/:agentName/:repoName/tree", optionalAuth, async (req: Authent
   res.json({ path: pathPrefix, entries });
 });
 
+router.get("/repos/:agentName/:repoName/entry-point", optionalAuth, async (req: AuthenticatedRequest, res) => {
+  const { agentName, repoName } = req.params;
+  const fullName = `${agentName}/${repoName}`;
+
+  const [repoCheck] = await db.select({ isPublic: reposTable.isPublic, ownerId: reposTable.ownerId })
+    .from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
+  if (!repoCheck || (!repoCheck.isPublic && (!req.agent || req.agent.id !== repoCheck.ownerId))) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  const RUNNABLE_EXTENSIONS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "py3"]);
+  const ENTRY_POINT_NAMES = [
+    "index.ts", "main.ts", "app.ts", "index.tsx",
+    "index.js", "main.js", "app.js",
+    "main.py", "index.py", "app.py", "run.py",
+  ];
+
+  const files = await db.select({ path: repoFilesTable.path })
+    .from(repoFilesTable)
+    .where(eq(repoFilesTable.repoFullName, fullName));
+
+  const filePaths = files.map((f) => f.path);
+
+  // Prefer well-known entry-point filenames (any depth)
+  for (const name of ENTRY_POINT_NAMES) {
+    const found = filePaths.find((p) => p === name || p.endsWith("/" + name));
+    if (found) { res.json({ path: found }); return; }
+  }
+
+  // Fall back to first file with a runnable extension
+  const fallback = filePaths.find((p) => {
+    const ext = p.split(".").pop()?.toLowerCase() ?? "";
+    return RUNNABLE_EXTENSIONS.has(ext);
+  });
+
+  res.json({ path: fallback ?? null });
+});
+
 router.get("/repos/:agentName/:repoName/blob", optionalAuth, async (req: AuthenticatedRequest, res) => {
   const { agentName, repoName } = req.params;
   const fullName = `${agentName}/${repoName}`;
@@ -558,10 +611,10 @@ router.post(
       });
       await db.update(reposTable).set({ starCount: sql`${reposTable.starCount} + 1` }).where(eq(reposTable.id, repo.id));
       await db.update(agentsTable).set({ starCount: sql`${agentsTable.starCount} + 1` }).where(eq(agentsTable.name, agentName));
-      cacheDelete(`repo:detail:${fullName}`);
-      cacheDelete(`agent:profile:${agentName}`);
-      cacheDelete("repos:list");
-      cacheDelete("explore:");
+      await cacheDelete(`repo:detail:${fullName}`);
+      await cacheDelete(`agent:profile:${agentName}`);
+      await cacheDelete("repos:list");
+      await cacheDelete("explore:");
     }
 
     res.json({ success: true, message: "Repository starred" });
@@ -589,15 +642,79 @@ router.delete(
     if (deleted.length > 0) {
       await db.update(reposTable).set({ starCount: sql`greatest(${reposTable.starCount} - 1, 0)` }).where(eq(reposTable.id, repo.id));
       await db.update(agentsTable).set({ starCount: sql`greatest(${agentsTable.starCount} - 1, 0)` }).where(eq(agentsTable.name, agentName));
-      cacheDelete(`repo:detail:${fullName}`);
-      cacheDelete(`agent:profile:${agentName}`);
-      cacheDelete("repos:list");
-      cacheDelete("explore:");
+      await cacheDelete(`repo:detail:${fullName}`);
+      await cacheDelete(`agent:profile:${agentName}`);
+      await cacheDelete("repos:list");
+      await cacheDelete("explore:");
     }
 
     res.json({ success: true, message: "Repository unstarred" });
   }
 );
+
+/* ─── Like / Unlike ──────────────────────────────────────────────── */
+router.post(
+  "/repos/:agentName/:repoName/like",
+  requireAnyAuth,
+  ipRateLimit(120, 60 * 1000),
+  async (req: AuthenticatedRequest, res) => {
+    const { agentName, repoName } = req.params;
+    const fullName = `${agentName}/${repoName}`;
+
+    const [repo] = await db.select({ id: reposTable.id, likeCount: reposTable.likeCount })
+      .from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
+    if (!repo) { res.status(404).json({ error: "not_found", message: "Repository not found" }); return; }
+
+    const likerId = req.agent ? req.agent.id : req.user!.id;
+    const likerType = req.agent ? "agent" : "user";
+
+    const existing = await db.select().from(likesTable)
+      .where(and(eq(likesTable.repoId, repo.id), eq(likesTable.likerId, likerId), eq(likesTable.likerType, likerType)))
+      .limit(1);
+
+    if (existing.length === 0) {
+      await db.insert(likesTable).values({ repoId: repo.id, likerId, likerType });
+      await db.update(reposTable).set({ likeCount: sql`${reposTable.likeCount} + 1` }).where(eq(reposTable.id, repo.id));
+      await cacheDelete(`repo:detail:${fullName}`);
+      await cacheDelete("repos:list");
+    }
+
+    const [updated] = await db.select({ likeCount: reposTable.likeCount }).from(reposTable).where(eq(reposTable.id, repo.id)).limit(1);
+    res.json({ liked: true, likeCount: updated?.likeCount ?? repo.likeCount + (existing.length === 0 ? 1 : 0) });
+  }
+);
+
+router.delete(
+  "/repos/:agentName/:repoName/like",
+  requireAnyAuth,
+  ipRateLimit(120, 60 * 1000),
+  async (req: AuthenticatedRequest, res) => {
+    const { agentName, repoName } = req.params;
+    const fullName = `${agentName}/${repoName}`;
+
+    const [repo] = await db.select({ id: reposTable.id, likeCount: reposTable.likeCount })
+      .from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
+    if (!repo) { res.status(404).json({ error: "not_found", message: "Repository not found" }); return; }
+
+    const likerId = req.agent ? req.agent.id : req.user!.id;
+    const likerType = req.agent ? "agent" : "user";
+
+    const deleted = await db.delete(likesTable)
+      .where(and(eq(likesTable.repoId, repo.id), eq(likesTable.likerId, likerId), eq(likesTable.likerType, likerType)))
+      .returning();
+
+    if (deleted.length > 0) {
+      await db.update(reposTable).set({ likeCount: sql`greatest(${reposTable.likeCount} - 1, 0)` }).where(eq(reposTable.id, repo.id));
+      await cacheDelete(`repo:detail:${fullName}`);
+      await cacheDelete("repos:list");
+    }
+
+    const [updated] = await db.select({ likeCount: reposTable.likeCount }).from(reposTable).where(eq(reposTable.id, repo.id)).limit(1);
+    res.json({ liked: false, likeCount: updated?.likeCount ?? Math.max(0, repo.likeCount - (deleted.length > 0 ? 1 : 0)) });
+  }
+);
+
+const RUNNABLE_LANGS = new Set(["python","python3","javascript","typescript","js","ts","tsx","jsx"]);
 
 router.post(
   "/repos/:agentName/:repoName/fork",
@@ -606,6 +723,7 @@ router.post(
   async (req: AuthenticatedRequest, res) => {
     const { agentName, repoName } = req.params;
     const fullName = `${agentName}/${repoName}`;
+    const forkComment = (req.body.forkComment as string | undefined)?.trim() ?? "";
 
     const [repo] = await db.select().from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
     if (!repo) {
@@ -613,37 +731,296 @@ router.post(
       return;
     }
 
-    const newFullName = `${req.agent!.name}/${repo.name}`;
+    const isCodeRepo = !!(repo.language && RUNNABLE_LANGS.has(repo.language.toLowerCase()));
+
+    // Make slug unique if name already taken
+    let slug = repo.name;
+    let newFullName = `${req.agent!.name}/${slug}`;
     const existing = await db.select({ id: reposTable.id }).from(reposTable).where(eq(reposTable.fullName, newFullName)).limit(1);
     if (existing.length > 0) {
-      res.status(409).json({ error: "conflict", message: "You already have a repository with this name" });
-      return;
+      slug = `${repo.name}-fork`;
+      newFullName = `${req.agent!.name}/${slug}`;
     }
 
+    // Load original files
+    const originalFiles = await db.select().from(repoFilesTable)
+      .where(eq(repoFilesTable.repoFullName, fullName));
+
+    // If there's a comment and it's a code repo, apply AI code modification
+    let finalFiles: Array<{ path: string; content: string }> = originalFiles.map(f => ({
+      path: f.path, content: f.content ?? "",
+    }));
+    let commitMsg = forkComment ? `Fork of ${fullName}: ${forkComment.slice(0, 80)}` : `Fork of ${fullName}`;
+    let aiSummary = "";
+    let aiModified = false;
+
+    if (forkComment && isCodeRepo && originalFiles.length > 0) {
+      try {
+        const aiResult = await applyCommentToRepo(
+          originalFiles.map(f => ({ path: f.path, content: f.content ?? "" })),
+          forkComment,
+          fullName,
+          repo.language ?? null,
+        );
+        finalFiles = aiResult.files;
+        commitMsg = aiResult.commitMessage;
+        aiSummary = aiResult.summary;
+        aiModified = aiResult.aiModified;
+      } catch (err) {
+        console.error("[fork] AI modification error:", err);
+      }
+    } else if (!isCodeRepo && forkComment) {
+      // Non-code repo: just append comment note
+      finalFiles = [...finalFiles, {
+        path: "FORK_NOTES.md",
+        content: `# Fork Notes\n\n${forkComment}\n\n---\n*Forked from [${fullName}](/${fullName})*\n`,
+      }];
+    }
+
+    const sha = generateCommitSha(`fork:${newFullName}:${Date.now()}`);
+
     const [forked] = await db.insert(reposTable).values({
-      name: repo.name,
+      name: slug,
       fullName: newFullName,
-      description: repo.description,
+      description: aiSummary
+        ? `${aiSummary} (forked from ${fullName})`
+        : forkComment
+          ? `${forkComment} (forked from ${fullName})`
+          : repo.description,
       language: repo.language,
+      isTextPost: repo.isTextPost ?? false,
       tags: repo.tags,
       visibility: "public",
       isPublic: true,
       ownerName: req.agent!.name,
       ownerId: req.agent!.id,
       forkedFromId: repo.id,
+      forkedFromFullName: fullName,
+      forkComment: forkComment || null,
       readme: repo.readme,
+      latestCommitSha: sha,
+      latestCommitMessage: commitMsg,
+      latestCommitAt: new Date(),
+    } as any).returning();
+
+    // Insert all final files (AI-modified or original)
+    for (const f of finalFiles) {
+      await db.insert(repoFilesTable).values({
+        repoId: forked.id,
+        repoFullName: newFullName,
+        path: f.path,
+        content: f.content,
+        size: Buffer.byteLength(f.content, "utf8"),
+        lastCommitSha: sha,
+        lastCommitMessage: commitMsg,
+        lastCommitAt: new Date(),
+      });
+    }
+
+    // Record commit with proper diff metadata
+    const originalPaths = new Set(originalFiles.map(f => f.path));
+    const finalPaths = new Set(finalFiles.map(f => f.path));
+    const addedPaths = [...finalPaths].filter(p => !originalPaths.has(p));
+    const modifiedPaths = [...finalPaths].filter(p => originalPaths.has(p));
+    const additions = finalFiles.reduce((s, f) => s + (f.content.split("\n").length), 0);
+    const deletions = originalFiles.reduce((s, f) => {
+      const finalFile = finalFiles.find(ff => ff.path === f.path);
+      return s + (finalFile ? 0 : (f.content?.split("\n").length ?? 0));
+    }, 0);
+
+    await db.insert(commitsTable).values({
+      sha,
+      repoId: forked.id,
+      repoFullName: newFullName,
+      message: commitMsg,
+      authorName: req.agent!.name,
+      authorId: req.agent!.id,
+      filesChanged: finalFiles.length,
+      additions,
+      deletions,
+      files: [
+        ...modifiedPaths.map(p => ({ path: p, status: aiModified ? "modified" : "added" })),
+        ...addedPaths.map(p => ({ path: p, status: "added" })),
+      ],
+    });
+
+    await db.update(reposTable)
+      .set({ forkCount: sql`${reposTable.forkCount} + 1`, commitCount: sql`${reposTable.commitCount} + 1` })
+      .where(eq(reposTable.id, repo.id));
+    await db.update(agentsTable)
+      .set({ repoCount: sql`${agentsTable.repoCount} + 1`, updatedAt: new Date() })
+      .where(eq(agentsTable.id, req.agent!.id));
+
+    await cacheDelete(`repo:detail:${fullName}`);
+    await cacheDelete(`agent:repos:${req.agent!.name}`);
+    await cacheDelete(`agent:profile:${req.agent!.name}`);
+    await cacheDelete("repos:list");
+    await cacheDelete("explore:");
+
+    res.status(201).json({ ...formatRepo(forked), isCodeFork: isCodeRepo, aiModified });
+  }
+);
+
+/* ─── Comments ───────────────────────────────────────────────────── */
+router.get(
+  "/repos/:agentName/:repoName/comments",
+  optionalAuth,
+  ipRateLimit(120, 60 * 1000),
+  async (req: AuthenticatedRequest, res) => {
+    const { agentName, repoName } = req.params;
+    const fullName = `${agentName}/${repoName}`;
+
+    const [repo] = await db.select({ id: reposTable.id, isPublic: reposTable.isPublic })
+      .from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
+    if (!repo || !repo.isPublic) {
+      res.status(404).json({ error: "not_found", message: "Repository not found" });
+      return;
+    }
+
+    const comments = await db
+      .select({
+        id: commentsTable.id,
+        repoId: commentsTable.repoId,
+        agentId: commentsTable.agentId,
+        agentName: commentsTable.agentName,
+        content: commentsTable.content,
+        createdAt: commentsTable.createdAt,
+        agentAvatarUrl: agentsTable.avatarUrl,
+      })
+      .from(commentsTable)
+      .leftJoin(agentsTable, eq(agentsTable.id, commentsTable.agentId))
+      .where(eq(commentsTable.repoId, repo.id))
+      .orderBy(commentsTable.createdAt);
+
+    res.json({ comments });
+  }
+);
+
+router.post(
+  "/repos/:agentName/:repoName/comments",
+  requireAuth,
+  agentRateLimit(120, 60 * 60 * 1000),
+  async (req: AuthenticatedRequest, res) => {
+    const { agentName, repoName } = req.params;
+    const fullName = `${agentName}/${repoName}`;
+    const content = (req.body.content as string | undefined)?.trim();
+
+    if (!content || content.length === 0) {
+      res.status(400).json({ error: "invalid_input", message: "Comment content is required" });
+      return;
+    }
+    if (content.length > 5000) {
+      res.status(400).json({ error: "invalid_input", message: "Comment too long (max 5000 chars)" });
+      return;
+    }
+
+    const [repo] = await db.select({ id: reposTable.id, isPublic: reposTable.isPublic })
+      .from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
+    if (!repo || !repo.isPublic) {
+      res.status(404).json({ error: "not_found", message: "Repository not found" });
+      return;
+    }
+
+    const [comment] = await db.insert(commentsTable).values({
+      repoId: repo.id,
+      agentId: req.agent!.id,
+      agentName: req.agent!.name,
+      content,
     }).returning();
 
-    await db.update(reposTable).set({ forkCount: sql`${reposTable.forkCount} + 1` }).where(eq(reposTable.id, repo.id));
-    await db.update(agentsTable).set({ repoCount: sql`${agentsTable.repoCount} + 1`, updatedAt: new Date() }).where(eq(agentsTable.id, req.agent!.id));
+    await db.update(reposTable)
+      .set({ commentCount: sql`${reposTable.commentCount} + 1` })
+      .where(eq(reposTable.id, repo.id));
 
-    cacheDelete(`repo:detail:${fullName}`);
-    cacheDelete(`agent:repos:${req.agent!.name}`);
-    cacheDelete(`agent:profile:${req.agent!.name}`);
-    cacheDelete("repos:list");
-    cacheDelete("explore:");
+    await cacheDelete(`repo:detail:${fullName}`);
 
-    res.status(201).json(formatRepo(forked));
+    res.status(201).json(comment);
+  }
+);
+
+/* ─── Agent: delete own comment ─────────────────────────────────── */
+router.delete(
+  "/repos/:agentName/:repoName/comments/:commentId",
+  requireAuth,
+  async (req: AuthenticatedRequest, res) => {
+    const { agentName, repoName, commentId } = req.params;
+    const fullName = `${agentName}/${repoName}`;
+
+    const [repo] = await db.select({ id: reposTable.id })
+      .from(reposTable).where(eq(reposTable.fullName, fullName)).limit(1);
+    if (!repo) {
+      res.status(404).json({ error: "not_found", message: "Repository not found" });
+      return;
+    }
+
+    const [comment] = await db.select()
+      .from(commentsTable)
+      .where(and(eq(commentsTable.id, commentId), eq(commentsTable.repoId, repo.id)))
+      .limit(1);
+    if (!comment) {
+      res.status(404).json({ error: "not_found", message: "Comment not found" });
+      return;
+    }
+
+    if (comment.agentId !== req.agent!.id) {
+      res.status(403).json({ error: "forbidden", message: "You can only delete your own comments" });
+      return;
+    }
+
+    await db.delete(commentsTable).where(eq(commentsTable.id, comment.id));
+    await db.update(reposTable)
+      .set({ commentCount: sql`greatest(${reposTable.commentCount} - 1, 0)` })
+      .where(eq(reposTable.id, repo.id));
+    await cacheDelete(`repo:detail:${fullName}`);
+
+    res.status(204).send();
+  }
+);
+
+/* ── GET /repos/:agentName/:repoName/images ───────────────────────────────
+   Return all image files in the repo (any directory depth).
+   Content stored as data:image/...;base64,... — returned as-is.
+   No auth required — public repos only.
+   ────────────────────────────────────────────────────────────────────────── */
+const IMAGE_EXTS = new Set(["png","jpg","jpeg","gif","webp","svg","bmp","tiff","tif","avif"]);
+
+router.get(
+  "/repos/:agentName/:repoName/images",
+  async (req, res) => {
+    const { agentName, repoName } = req.params;
+    const fullName = `${agentName}/${repoName}`;
+    const cacheKey = `repo:images:${fullName}`;
+
+    const cached = await cacheGet<object>(cacheKey);
+    if (cached) {
+      res.setHeader("X-Cache", "HIT");
+      res.json(cached);
+      return;
+    }
+
+    const [repo] = await db.select().from(reposTable)
+      .where(and(eq(reposTable.ownerName, agentName), eq(reposTable.name, repoName), eq(reposTable.isPublic, true)))
+      .limit(1);
+    if (!repo) { res.status(404).json({ error: "not_found" }); return; }
+
+    const allFiles = await db.select({ path: repoFilesTable.path, content: repoFilesTable.content })
+      .from(repoFilesTable)
+      .where(eq(repoFilesTable.repoId, repo.id));
+
+    const images = allFiles
+      .filter(f => {
+        const ext = f.path.split(".").pop()?.toLowerCase() ?? "";
+        return IMAGE_EXTS.has(ext) || (f.content?.startsWith("data:image/") ?? false);
+      })
+      .map(f => ({
+        path: f.path,
+        name: f.path.split("/").pop() ?? f.path,
+        content: f.content ?? "",
+      }));
+
+    const payload = { images };
+    await cacheSet(cacheKey, payload, TTL.REPO_DETAIL);
+    res.json(payload);
   }
 );
 
@@ -655,7 +1032,7 @@ router.get(
     const period   = (req.query.period as string) || "weekly";
     const cacheKey = `explore:trending:${period}:${language || ""}`;
 
-    const cached = cacheGet<object>(cacheKey);
+    const cached = await cacheGet<object>(cacheKey);
     if (cached) {
       res.setHeader("X-Cache", "HIT");
       res.setHeader("Cache-Control", "public, max-age=60");
@@ -673,11 +1050,11 @@ router.get(
 
     const repos = await db.select().from(reposTable)
       .where(where)
-      .orderBy(desc(reposTable.starCount))
+      .orderBy(desc(reposTable.githubStars), desc(reposTable.createdAt))
       .limit(20);
 
     const payload = { repos: repos.map(formatRepo), total: repos.length, page: 1, limit: 20 };
-    cacheSet(cacheKey, payload, TTL.EXPLORE_TRENDING);
+    await cacheSet(cacheKey, payload, TTL.EXPLORE_TRENDING);
 
     res.setHeader("X-Cache", "MISS");
     res.setHeader("Cache-Control", "public, max-age=60");
@@ -690,7 +1067,7 @@ router.get(
   ipRateLimit(30, 60 * 1000),
   async (_req, res) => {
     const cacheKey = "explore:languages";
-    const cached = cacheGet<object>(cacheKey);
+    const cached = await cacheGet<object>(cacheKey);
     if (cached) {
       res.setHeader("X-Cache", "HIT");
       res.setHeader("Cache-Control", "public, max-age=300");
@@ -721,7 +1098,7 @@ router.get(
         color: languageColors[r.language || ""] || "#6e7681",
       })),
     };
-    cacheSet(cacheKey, payload, TTL.EXPLORE_LANGUAGES);
+    await cacheSet(cacheKey, payload, TTL.EXPLORE_LANGUAGES);
 
     res.setHeader("X-Cache", "MISS");
     res.setHeader("Cache-Control", "public, max-age=300");
@@ -736,13 +1113,21 @@ function formatRepo(r: typeof reposTable.$inferSelect) {
     fullName: r.fullName,
     description: r.description,
     language: r.language,
+    isTextPost: r.isTextPost,
+    imageUrls: r.imageUrls ?? [],
     tags: r.tags,
     visibility: r.visibility,
     starCount: r.starCount,
     forkCount: r.forkCount,
     commitCount: r.commitCount,
+    likeCount: r.likeCount,
+    commentCount: r.commentCount,
+    githubStars: r.githubStars,
+    githubForks: r.githubForks,
+    forkComment: r.forkComment,
     ownerName: r.ownerName,
     forkedFromId: r.forkedFromId,
+    forkedFromFullName: r.forkedFromFullName,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -798,11 +1183,155 @@ router.get(
             )`,
           )
         ))
-        .orderBy(desc(reposTable.starCount))
+        .orderBy(desc(reposTable.githubStars))
         .limit(20),
     ]);
 
     res.json({ agents: agentRows, repos: repoRows.map(formatRepo) });
+  }
+);
+
+/* ─── Following feed ─────────────────────────────────────────────────
+   GET /api/feed/following  — repos only from accounts the viewer follows,
+   newest first. Requires any auth (human user or agent). */
+router.get(
+  "/feed/following",
+  ipRateLimit(60, 60 * 1000),
+  requireAnyAuth,
+  async (req: AuthenticatedRequest, res) => {
+    let followeeIds: string[] = [];
+
+    if (req.agent) {
+      const rows = await db
+        .select({ followeeAgentId: followsTable.followeeAgentId })
+        .from(followsTable)
+        .where(eq(followsTable.followerAgentId, req.agent.id));
+      followeeIds = rows.map(r => r.followeeAgentId);
+    } else if (req.user) {
+      const rows = await db
+        .select({ followeeAgentId: followsTable.followeeAgentId })
+        .from(followsTable)
+        .where(eq(followsTable.followerUserId, req.user.id));
+      followeeIds = rows.map(r => r.followeeAgentId);
+    }
+
+    if (followeeIds.length === 0) {
+      res.json({ repos: [], total: 0, page: 1, limit: 20 });
+      return;
+    }
+
+    const page  = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 20));
+    const offset = (page - 1) * limit;
+
+    const repos = await db
+      .select()
+      .from(reposTable)
+      .where(and(
+        eq(reposTable.isPublic, true),
+        inArray(reposTable.ownerId, followeeIds)
+      ))
+      .orderBy(desc(reposTable.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    res.json({ repos: repos.map(formatRepo), total: repos.length, page, limit });
+  }
+);
+
+/* ─── My follows list ────────────────────────────────────────────────
+   GET /api/me/follows  — returns names of agents the viewer follows.
+   Used by the frontend to prioritise posts in "For You". */
+router.get(
+  "/me/follows",
+  requireAnyAuth,
+  async (req: AuthenticatedRequest, res) => {
+    let names: string[] = [];
+
+    if (req.agent) {
+      const rows = await db
+        .select({ followeeAgentName: followsTable.followeeAgentName })
+        .from(followsTable)
+        .where(eq(followsTable.followerAgentId, req.agent.id));
+      names = rows.map(r => r.followeeAgentName);
+    } else if (req.user) {
+      const rows = await db
+        .select({ followeeAgentName: followsTable.followeeAgentName })
+        .from(followsTable)
+        .where(eq(followsTable.followerUserId, req.user.id));
+      names = rows.map(r => r.followeeAgentName);
+    }
+
+    res.json({ following: names });
+  }
+);
+
+/* ─── EvoZone: val_vibe leaderboard & ratchet ────────────────────── */
+router.get(
+  "/lab/evozone",
+  ipRateLimit(120, 60 * 1000),
+  async (req, res) => {
+    const tag = ((req.query.tag as string) || "autoresearch").slice(0, MAX_TAG_LENGTH);
+
+    // Fetch all public repos with this evolution tag
+    const repos = await db
+      .select()
+      .from(reposTable)
+      .where(and(
+        eq(reposTable.isPublic, true),
+        sql`${tag} = ANY(${reposTable.tags})`
+      ));
+
+    if (repos.length === 0) {
+      res.json({ champion: null, repos: [] });
+      return;
+    }
+
+    // val_vibe = stars × 2 + forks × 5
+    const withScore = repos.map(r => ({
+      ...formatRepo(r),
+      valVibe: (r.starCount ?? 0) * 2 + (r.forkCount ?? 0) * 5,
+    }));
+
+    // Build id → score lookup for fork chain comparison
+    const scoreById = new Map(withScore.map(r => [r.id, r.valVibe]));
+
+    // For repos forked from OUTSIDE EvoZone, fetch parent scores separately
+    const outsideParentIds = withScore
+      .filter(r => r.forkedFromId && !scoreById.has(r.forkedFromId))
+      .map(r => r.forkedFromId as string);
+
+    const parentScoreById = new Map<string, number>();
+    if (outsideParentIds.length > 0) {
+      const parents = await db
+        .select({ id: reposTable.id, starCount: reposTable.starCount, forkCount: reposTable.forkCount })
+        .from(reposTable)
+        .where(inArray(reposTable.id, outsideParentIds));
+      for (const p of parents) {
+        parentScoreById.set(p.id, (p.starCount ?? 0) * 2 + (p.forkCount ?? 0) * 5);
+      }
+    }
+
+    // Assign ratchet status to each repo
+    const enriched = withScore.map(r => {
+      if (!r.forkedFromId) {
+        return { ...r, ratchetStatus: "genesis" as const, parentValVibe: null };
+      }
+      const parentScore = scoreById.get(r.forkedFromId) ?? parentScoreById.get(r.forkedFromId) ?? 0;
+      return {
+        ...r,
+        ratchetStatus: (r.valVibe > parentScore ? "evolved" : "pending") as "evolved" | "pending",
+        parentValVibe: parentScore,
+      };
+    });
+
+    // Champion: highest val_vibe; tiebreak by oldest (most established lineage)
+    const sorted = [...enriched].sort(
+      (a, b) => b.valVibe - a.valVibe || new Date(a.createdAt!).getTime() - new Date(b.createdAt!).getTime()
+    );
+    const champion = sorted[0] ?? null;
+
+    res.json({ champion, repos: sorted });
   }
 );
 

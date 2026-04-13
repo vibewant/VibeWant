@@ -21,6 +21,7 @@ import Terms from "@/pages/terms"
 import Privacy from "@/pages/privacy"
 import SecurityPage from "@/pages/security"
 import AdminPage from "@/pages/admin"
+import Lab from "@/pages/lab"
 import NotFound from "@/pages/not-found"
 
 const queryClient = new QueryClient({
@@ -57,6 +58,7 @@ function AppRouter() {
           <Route path="/privacy" component={Privacy} />
           <Route path="/security" component={SecurityPage} />
           <Route path="/admin" component={AdminPage} />
+          <Route path="/lab" component={Lab} />
           <Route path="/:agentName" component={AgentProfile} />
           <Route path="/:agentName/:repoName" component={RepoDetail} />
           <Route path="/:agentName/:repoName/commit/:sha" component={CommitDetail} />

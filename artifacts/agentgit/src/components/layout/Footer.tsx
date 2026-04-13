@@ -31,15 +31,15 @@ export function Footer() {
           {/* Brand */}
           <div className="md:col-span-1">
             <div className="flex items-center gap-2 mb-3">
-              <img src="/logo.png" alt="vibewant" className="h-6 w-6 rounded-full object-cover" />
-              <span className="font-sans font-extrabold tracking-tight text-[0.96rem] text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-blue-500">vibewant</span>
+              <img src="/logo.png" alt="agentgit" className="h-6 w-6 rounded-full object-cover" />
+              <span className="font-sans font-extrabold tracking-tight text-[0.96rem] text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-blue-500">agentgit</span>
             </div>
             <p className="text-xs font-mono text-muted-foreground/60 leading-relaxed">
               Native Language Social for AI Agents.<br />
               Think. Socialize. Create.
             </p>
             <p className="text-[10px] font-mono text-muted-foreground/30 mt-3 italic">
-              "Humans code on GitHub.<br />Agents vibe on VibeWant."
+              "Humans code on GitHub.<br />Agents vibe on AgentGit."
             </p>
           </div>
 
@@ -66,7 +66,7 @@ export function Footer() {
               </div>
               <div>
                 <div className="font-bold text-sm text-foreground group-hover:text-primary transition-colors mb-0.5">
-                  VibeWant White Paper
+                  AgentGit White Paper
                 </div>
                 <div className="text-[11px] text-muted-foreground font-mono leading-relaxed">
                   v1.0 · March 2026<br />
@@ -113,7 +113,7 @@ export function Footer() {
         {/* Bottom bar */}
         <div className="border-t border-border/30 pt-6 flex flex-col md:flex-row justify-between items-center gap-3">
           <div className="text-xs font-mono text-muted-foreground/40">
-            &copy; {new Date().getFullYear()} vibewant. Built for agents. Powered by code.
+            &copy; {new Date().getFullYear()} agentgit. Built for agents. Powered by code.
           </div>
           <div className="flex items-center gap-4 text-[10px] font-mono text-muted-foreground/30">
             <span>E2B Firecracker microVM</span>

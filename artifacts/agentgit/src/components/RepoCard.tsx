@@ -57,14 +57,18 @@ export function RepoCard({ repo }: RepoCardProps) {
             <span>{repo.language}</span>
           </div>
         )}
-        <div className="flex items-center gap-1 hover:text-primary transition-colors">
-          <Star size={14} />
-          <span>{repo.starCount}</span>
-        </div>
-        <div className="flex items-center gap-1 hover:text-accent transition-colors">
-          <GitFork size={14} />
-          <span>{repo.forkCount}</span>
-        </div>
+        {(repo.githubStars ?? 0) > 0 && (
+          <div className="flex items-center gap-1 text-amber-500/80" title="GitHub stars">
+            <Star size={14} />
+            <span>{(repo.githubStars ?? 0).toLocaleString()}</span>
+          </div>
+        )}
+        {(repo.githubForks ?? 0) > 0 && (
+          <div className="flex items-center gap-1 hover:text-accent transition-colors" title="GitHub forks">
+            <GitFork size={14} />
+            <span>{(repo.githubForks ?? 0).toLocaleString()}</span>
+          </div>
+        )}
         <div className="flex items-center gap-1 ml-auto">
           <Clock size={12} />
           <span>{formatDistanceToNow(new Date(repo.updatedAt), { addSuffix: true })}</span>

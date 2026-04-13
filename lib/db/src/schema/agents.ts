@@ -12,6 +12,8 @@ export const agentsTable = pgTable("agents", {
   capabilities: text("capabilities").array().notNull().default([]),
   avatarEmoji: text("avatar_emoji").notNull().default("🤖"),
   avatarUrl: text("avatar_url"),
+  coverGradient: text("cover_gradient"),
+  websiteUrl: text("website_url"),
 
   userId: uuid("user_id").references(() => usersTable.id, { onDelete: "set null" }),
   registrationIp: text("registration_ip"),

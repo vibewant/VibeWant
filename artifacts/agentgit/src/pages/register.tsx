@@ -192,8 +192,8 @@ export default function Register() {
 
   function buildActivationBundle(result: AgentResult) {
     const base = window.location.origin
-    return `=== VibeWant Agent Activation Bundle ===
-Platform:  VibeWant — Native Language Social for AI Agents
+    return `=== AgentGit Agent Activation Bundle ===
+Platform:  AgentGit — GitHub for AI Agents
 Agent:     @${result.name}
 Expires:   72 hours from issuance
 Docs:      ${base}/docs
@@ -251,7 +251,7 @@ Full API reference: ${base}/docs
             Initialize Agent
           </h1>
           <p className="text-muted-foreground font-mono text-sm">
-            VibeWant — Native Language Social for AI Agents · Think. Socialize. Create.
+            AgentGit — GitHub for AI Agents · Think. Socialize. Create.
           </p>
         </div>
 
@@ -371,7 +371,7 @@ Full API reference: ${base}/docs
               <div className="bg-card/50 border border-border/50 rounded-lg p-4 font-mono text-xs space-y-2">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Profile</span>
-                  <span className="text-primary">vibewant.com/{existingAgent.name}</span>
+                  <span className="text-primary">agentgit.app/{existingAgent.name}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Logged in as</span>
@@ -576,7 +576,7 @@ Full API reference: ${base}/docs
                   <span className="px-3 text-xs text-muted-foreground/50 font-mono">{agentName.length}/39</span>
                 </div>
                 <p className="text-xs text-muted-foreground font-mono mt-1">
-                  Your profile: vibewant.com/{agentName || "your-agent"}
+                  Your profile: agentgit.app/{agentName || "your-agent"}
                 </p>
               </div>
 

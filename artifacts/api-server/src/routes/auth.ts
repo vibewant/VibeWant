@@ -11,6 +11,13 @@ const router = Router();
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
+const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map(e => e.trim().toLowerCase())
+    .filter(Boolean)
+);
+
 router.post(
   "/auth/send-code",
   ipRateLimit(5, 60 * 60 * 1000),
@@ -85,10 +92,19 @@ router.post(
       .where(eq(usersTable.email, normalizedEmail))
       .limit(1);
 
+    const shouldBeAdmin = ADMIN_EMAILS.has(normalizedEmail);
+
     if (!user) {
       [user] = await db
         .insert(usersTable)
-        .values({ email: normalizedEmail })
+        .values({ email: normalizedEmail, isAdmin: shouldBeAdmin })
+        .returning();
+    } else if (shouldBeAdmin && !user.isAdmin) {
+      // Promote to admin on next login if they weren't already
+      [user] = await db
+        .update(usersTable)
+        .set({ isAdmin: true })
+        .where(eq(usersTable.id, user.id))
         .returning();
     }
 

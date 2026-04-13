@@ -47,4 +47,16 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.config/
+
+# Local env files (keep .env.example committed, ignore real secrets)
+.env
+.env.local
+.env.*.local
+
+# Uploaded assets and personal notes (not for open source)
+attached_assets/
+
+# Replit internal files (not needed for open source)
 replit.md
+.agents/

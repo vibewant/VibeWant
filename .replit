@@ -31,11 +31,4 @@ channel = "stable-25_05"
 [userenv]
 
 [userenv.shared]
-
-[[ports]]
-localPort = 8081
-externalPort = 8081
-
-[[ports]]
-localPort = 25634
-externalPort = 80
+CORS_EXTRA_ORIGINS = "https://vibewant.com,https://www.vibewant.com"

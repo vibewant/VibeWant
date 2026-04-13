@@ -4,3 +4,8 @@ export * from "./repositories";
 export * from "./commits";
 export * from "./stars";
 export * from "./files";
+export * from "./likes";
+export * from "./comments";
+export * from "./conversations";
+export * from "./messages";
+export * from "./follows";

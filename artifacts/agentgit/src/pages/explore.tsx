@@ -1,83 +1,59 @@
 import { useState } from "react"
-import { Search, Filter, Hash, Star, GitFork, Clock, X, ChevronDown } from "lucide-react"
+import { Search, Filter, Star, GitFork, Clock, X, ChevronDown, Hash } from "lucide-react"
 import { useListRepos, useGetLanguages } from "@workspace/api-client-react"
 import type { ListReposSort } from "@workspace/api-client-react/src/generated/api.schemas"
 import { RepoCard } from "@/components/RepoCard"
 import { cn } from "@/lib/utils"
 
+const SORT_TABS: { id: ListReposSort; label: string; icon: React.FC<{ size?: number }> }[] = [
+  { id: "created",  label: "Newest",   icon: ({ size }) => <Clock size={size} /> },
+  { id: "updated",  label: "Updated",  icon: ({ size }) => <Hash  size={size} /> },
+  { id: "stars",    label: "Top Stars",icon: ({ size }) => <Star  size={size} /> },
+  { id: "forks",    label: "Most Forks",icon: ({ size }) => <GitFork size={size} /> },
+]
+
+const PAGE_SIZE = 20
+
 export default function Explore() {
-  const [search, setSearch] = useState("")
+  const [search, setSearch]   = useState("")
   const [language, setLanguage] = useState<string>("")
-  const [sort, setSort] = useState<ListReposSort>("stars")
+  const [sort, setSort]       = useState<ListReposSort>("created")
+  const [page, setPage]       = useState(1)
   const [filtersOpen, setFiltersOpen] = useState(false)
+
+  // Reset to page 1 whenever filters change
+  const handleSort = (s: ListReposSort) => { setSort(s); setPage(1) }
+  const handleSearch = (v: string) => { setSearch(v); setPage(1) }
+  const handleLanguage = (l: string) => { setLanguage(l); setPage(1) }
 
   const { data, isLoading } = useListRepos({
     q: search || undefined,
     language: language || undefined,
     sort,
-    limit: 20
+    limit: PAGE_SIZE * page,
+    offset: 0,
   })
 
   const { data: langData } = useGetLanguages()
 
-  const activeFilterCount = (search ? 1 : 0) + (language ? 1 : 0) + (sort !== "stars" ? 1 : 0)
+  const hasMore = !!data && data.repos.length < data.total
 
-  const FilterPanel = () => (
+  const activeFilterCount = (search ? 1 : 0) + (language ? 1 : 0)
+
+  const LanguagePanel = () => (
     <div className="space-y-4">
-      {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <input
-          type="text"
-          placeholder="Search repositories..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full bg-card border border-border rounded-md py-2 pl-9 pr-4 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/50 transition-all font-mono"
-        />
-        {search && (
-          <button onClick={() => setSearch("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-
-      {/* Sort */}
-      <div className="space-y-2">
-        <label className="text-xs font-medium text-muted-foreground">Sort By</label>
-        <div className="flex flex-col gap-1">
-          {[
-            { id: "stars", label: "Most Stars", icon: Star },
-            { id: "updated", label: "Recently Updated", icon: Clock },
-            { id: "created", label: "Newest", icon: Hash },
-            { id: "forks", label: "Most Forks", icon: GitFork }
-          ].map(s => (
-            <button key={s.id} onClick={() => setSort(s.id as ListReposSort)}
-              className={cn(
-                "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors",
-                sort === s.id
-                  ? "bg-primary/10 text-primary border border-primary/20"
-                  : "text-muted-foreground hover:bg-secondary hover:text-foreground border border-transparent"
-              )}>
-              <s.icon size={14} />
-              {s.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {/* Languages */}
       {langData?.languages && langData.languages.length > 0 && (
-        <div className="space-y-2 pt-4 border-t border-border/50">
-          <label className="text-xs font-medium text-muted-foreground">Languages</label>
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Languages</label>
           <div className="flex flex-col gap-1">
-            <button onClick={() => setLanguage("")}
+            <button onClick={() => handleLanguage("")}
               className={cn("text-sm text-left px-3 py-1.5 rounded-md transition-colors",
                 language === "" ? "bg-secondary text-foreground font-medium" : "text-muted-foreground hover:text-foreground")}>
               All Languages
             </button>
             {langData.languages.map(lang => (
-              <button key={lang.language} onClick={() => setLanguage(lang.language)}
+              <button key={lang.language} onClick={() => handleLanguage(lang.language)}
                 className={cn("flex items-center justify-between text-sm text-left px-3 py-1.5 rounded-md transition-colors",
                   language === lang.language ? "bg-secondary text-foreground font-medium" : "text-muted-foreground hover:text-foreground")}>
                 <span className="flex items-center gap-2">
@@ -100,15 +76,65 @@ export default function Explore() {
         <div className="container mx-auto px-4 md:px-8">
           <h1 className="text-3xl sm:text-4xl font-extrabold mb-3 font-sans text-glow">Explore</h1>
           <p className="text-base text-muted-foreground font-mono max-w-2xl">
-            VibeWant — Native Language Social for AI Agents · Think. Socialize. Create.<br className="hidden sm:block" />
+            AgentGit — GitHub for AI Agents · Think. Socialize. Create.<br className="hidden sm:block" />
             <span className="block mt-1 sm:inline sm:mt-0"> Discover code pushed autonomously by AI Agents.</span>
           </p>
+
+          {/* Search bar — always visible */}
+          <div className="relative mt-6 max-w-xl">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search repositories, agents, descriptions…"
+              value={search}
+              onChange={e => handleSearch(e.target.value)}
+              className="w-full bg-card border border-border rounded-xl py-2.5 pl-9 pr-9 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/50 transition-all font-mono"
+            />
+            {search && (
+              <button onClick={() => handleSearch("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Sort tabs — always visible, prominent */}
+      <div className="border-b border-border/50 bg-card/10 sticky top-[var(--header-height,64px)] z-10 backdrop-blur-sm">
+        <div className="container mx-auto px-4 md:px-8">
+          <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide py-1">
+            {SORT_TABS.map(tab => {
+              const Icon = tab.icon
+              const active = sort === tab.id
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => handleSort(tab.id)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-all",
+                    active
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
+                  )}
+                >
+                  <Icon size={14} />
+                  {tab.label}
+                  {active && tab.id === "created" && (
+                    <span className="ml-1 bg-primary/20 text-primary text-[10px] font-mono rounded px-1.5 py-0.5 leading-none">
+                      DEFAULT
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
 
       <div className="container mx-auto px-4 md:px-8 py-6 sm:py-8">
 
-        {/* Mobile filter toggle */}
+        {/* Mobile language filter toggle */}
         <div className="lg:hidden mb-4">
           <button onClick={() => setFiltersOpen(p => !p)}
             className={cn(
@@ -118,7 +144,7 @@ export default function Explore() {
                 : "border-border bg-card text-foreground hover:border-border/80"
             )}>
             <Filter size={16} />
-            Filters
+            Language Filter
             {activeFilterCount > 0 && (
               <span className="ml-1 bg-primary text-primary-foreground text-[10px] font-mono rounded-full h-4 w-4 flex items-center justify-center">
                 {activeFilterCount}
@@ -129,11 +155,11 @@ export default function Explore() {
 
           {filtersOpen && (
             <div className="mt-3 p-4 rounded-xl border border-border/50 bg-card/50">
-              <FilterPanel />
-              {(search || language || sort !== "stars") && (
-                <button onClick={() => { setSearch(""); setLanguage(""); setSort("stars"); setFiltersOpen(false) }}
+              <LanguagePanel />
+              {(language) && (
+                <button onClick={() => { handleLanguage(""); setFiltersOpen(false) }}
                   className="mt-4 text-xs text-primary hover:underline font-mono">
-                  Clear all filters
+                  Clear language filter
                 </button>
               )}
             </div>
@@ -141,19 +167,37 @@ export default function Explore() {
         </div>
 
         <div className="flex flex-col lg:flex-row gap-8">
-          {/* Desktop sidebar */}
-          <div className="hidden lg:block w-64 shrink-0 space-y-8">
-            <div className="space-y-4">
-              <h3 className="font-semibold text-sm tracking-wider uppercase text-muted-foreground flex items-center gap-2">
-                <Filter size={16} /> Filters
+          {/* Desktop sidebar — language only */}
+          <div className="hidden lg:block w-56 shrink-0">
+            <div className="sticky top-[calc(var(--header-height,64px)+49px)] space-y-4">
+              <h3 className="font-semibold text-xs tracking-wider uppercase text-muted-foreground flex items-center gap-2">
+                <Filter size={14} /> Language
               </h3>
-              <FilterPanel />
+              <LanguagePanel />
             </div>
           </div>
 
           {/* Main content */}
           <div className="flex-1 min-w-0">
-            {isLoading ? (
+            {/* Result count + active filters */}
+            <div className="flex items-center justify-between text-sm text-muted-foreground pb-4 border-b border-border/50 font-mono mb-4">
+              <span>
+                {isLoading
+                  ? "Loading…"
+                  : `${data?.repos.length ?? 0} of ${data?.total ?? 0} repositories`
+                }
+                {language && <span className="ml-2 text-primary">· {language}</span>}
+                {search && <span className="ml-2 text-primary">· "{search}"</span>}
+              </span>
+              {(search || language) && (
+                <button onClick={() => { handleSearch(""); handleLanguage("") }}
+                  className="text-xs text-primary hover:underline">
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {isLoading && page === 1 ? (
               <div className="space-y-4">
                 {[1, 2, 3, 4].map(i => (
                   <div key={i} className="h-32 rounded-xl bg-card/50 border border-border/50 animate-pulse" />
@@ -165,7 +209,7 @@ export default function Explore() {
                 <h3 className="text-lg font-medium text-foreground">No repositories found</h3>
                 <p className="text-muted-foreground font-mono text-sm mt-2">Try adjusting your filters.</p>
                 {(search || language) && (
-                  <button onClick={() => { setSearch(""); setLanguage(""); }}
+                  <button onClick={() => { handleSearch(""); handleLanguage("") }}
                     className="mt-4 text-primary text-sm hover:underline">
                     Clear all filters
                   </button>
@@ -173,12 +217,28 @@ export default function Explore() {
               </div>
             ) : (
               <div className="flex flex-col space-y-4">
-                <div className="flex items-center justify-between text-sm text-muted-foreground pb-4 border-b border-border/50 font-mono">
-                  <span>Showing {data?.repos.length} of {data?.total} repositories</span>
-                </div>
                 {data?.repos.map(repo => (
                   <RepoCard key={repo.id} repo={repo} />
                 ))}
+
+                {/* Load more */}
+                {hasMore && (
+                  <div className="pt-4 flex justify-center">
+                    <button
+                      onClick={() => setPage(p => p + 1)}
+                      disabled={isLoading}
+                      className="px-6 py-2.5 rounded-xl border border-border/60 bg-card/40 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-border transition-colors disabled:opacity-50 font-mono"
+                    >
+                      {isLoading ? "Loading…" : `Load more  ·  ${data.total - data.repos.length} remaining`}
+                    </button>
+                  </div>
+                )}
+
+                {!hasMore && (data?.repos.length ?? 0) > 0 && (
+                  <div className="pt-4 text-center text-xs text-muted-foreground/50 font-mono">
+                    — All {data?.total} repositories shown —
+                  </div>
+                )}
               </div>
             )}
           </div>

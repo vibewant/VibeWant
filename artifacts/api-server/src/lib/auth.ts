@@ -131,6 +131,99 @@ export async function requireAuth(
   });
 }
 
+/**
+ * requireAnyAuth — accepts EITHER an agent credential (API key / JWT)
+ * OR a human user session cookie/token.
+ *
+ * Used for actions that both agents and human users can perform (e.g. likes).
+ * Sets req.agent if authenticated as an agent, req.user if as a human.
+ */
+/**
+ * If a human user is an admin, resolve their linked agent account so all
+ * downstream actions are attributed to the agent (keeps the agent persona).
+ * Returns true if next() was already called, false otherwise.
+ */
+async function resolveUserSession(
+  user: typeof usersTable.$inferSelect,
+  req: AuthenticatedRequest,
+  next: NextFunction
+): Promise<boolean> {
+  if (user.isAdmin) {
+    const [linkedAgent] = await db.select().from(agentsTable)
+      .where(eq(agentsTable.userId, user.id)).limit(1);
+    if (linkedAgent && !linkedAgent.isLocked) {
+      req.agent = linkedAgent;
+      next();
+      return true;
+    }
+  }
+  req.user = user;
+  next();
+  return true;
+}
+
+export async function requireAnyAuth(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  // ── 1. Try agent API key ─────────────────────────────────────────
+  const apiKey = req.headers["x-agent-key"] as string;
+  if (apiKey) {
+    const keyHash = sha256(apiKey);
+    const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.apiKeyHash, keyHash)).limit(1);
+    if (agent && !agent.isLocked) { req.agent = agent; return next(); }
+    res.status(401).json({ error: "unauthorized", message: "Invalid API key" });
+    return;
+  }
+
+  // ── 2. Try agent JWT Bearer token ────────────────────────────────
+  const authHeader = req.headers["authorization"] as string;
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    const payload = verifyToken(token);
+    if (payload && payload.type === "access") {
+      const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, payload.agentId)).limit(1);
+      if (agent && !agent.isLocked) { req.agent = agent; return next(); }
+    }
+    // Could be a human session token in Bearer form
+    const tokenHash = sha256(authHeader.slice(7));
+    const [session] = await db
+      .select({ session: userSessionsTable, user: usersTable })
+      .from(userSessionsTable)
+      .innerJoin(usersTable, eq(userSessionsTable.userId, usersTable.id))
+      .where(eq(userSessionsTable.sessionTokenHash, tokenHash))
+      .limit(1);
+    if (session && session.session.expiresAt >= new Date()) {
+      await resolveUserSession(session.user, req, next);
+      return;
+    }
+    res.status(401).json({ error: "unauthorized", message: "Invalid or expired token" });
+    return;
+  }
+
+  // ── 3. Try human session cookie ──────────────────────────────────
+  const cookie = req.headers["cookie"];
+  if (cookie) {
+    const match = cookie.match(/vw_session=([^;]+)/);
+    if (match) {
+      const tokenHash = sha256(decodeURIComponent(match[1]));
+      const [session] = await db
+        .select({ session: userSessionsTable, user: usersTable })
+        .from(userSessionsTable)
+        .innerJoin(usersTable, eq(userSessionsTable.userId, usersTable.id))
+        .where(eq(userSessionsTable.sessionTokenHash, tokenHash))
+        .limit(1);
+      if (session && session.session.expiresAt >= new Date()) {
+        await resolveUserSession(session.user, req, next);
+        return;
+      }
+    }
+  }
+
+  res.status(401).json({ error: "unauthorized", message: "Login required" });
+}
+
 export async function optionalAuth(
   req: AuthenticatedRequest,
   _res: Response,
@@ -154,7 +247,30 @@ export async function optionalAuth(
     const payload = verifyToken(token);
     if (payload && payload.type === "access") {
       const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, payload.agentId)).limit(1);
-      if (agent && !agent.isLocked) req.agent = agent;
+      if (agent && !agent.isLocked) { req.agent = agent; return next(); }
+    }
+  }
+
+  // Try human session cookie — if admin, resolve as linked agent
+  const cookie = req.headers["cookie"];
+  if (cookie) {
+    const match = cookie.match(/vw_session=([^;]+)/);
+    if (match) {
+      const tokenHash = sha256(decodeURIComponent(match[1]));
+      const [session] = await db
+        .select({ session: userSessionsTable, user: usersTable })
+        .from(userSessionsTable)
+        .innerJoin(usersTable, eq(userSessionsTable.userId, usersTable.id))
+        .where(eq(userSessionsTable.sessionTokenHash, tokenHash))
+        .limit(1);
+      if (session && session.session.expiresAt >= new Date()) {
+        if (session.user.isAdmin) {
+          const [linkedAgent] = await db.select().from(agentsTable)
+            .where(eq(agentsTable.userId, session.user.id)).limit(1);
+          if (linkedAgent && !linkedAgent.isLocked) { req.agent = linkedAgent; return next(); }
+        }
+        req.user = session.user;
+      }
     }
   }
 

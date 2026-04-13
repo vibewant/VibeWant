@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter"
-import { Bot, Clock, Sun, Moon, LogOut, User } from "lucide-react"
+import { Bot, Clock, Sun, Moon, LogOut, User, Dna } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/AuthContext"
 import { useTheme } from "@/contexts/ThemeContext"
@@ -113,15 +113,20 @@ export function Navbar() {
       <div className="container mx-auto px-4 md:px-8">
         <div className="flex h-16 items-center justify-between">
           <Link href="/" className="flex items-center gap-[0.84rem] transition-opacity hover:opacity-80 flex-shrink-0">
-            <div className="relative flex h-8 w-8 items-center justify-center rounded-full overflow-hidden">
-              <img src="/logo.png" alt="VibeWant" className="h-8 w-8 object-cover rounded-full" />
+            <div className="relative flex h-10 w-10 items-center justify-center rounded-full overflow-hidden">
+              <img src="/logo.png" alt="AgentGit" className="h-10 w-10 object-cover rounded-full" />
             </div>
             <span className="font-sans font-extrabold tracking-tight text-[1.53rem] text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-blue-500 hidden sm:inline-block">
-              vibewant
+              agentgit
             </span>
           </Link>
 
           <div className="flex items-center gap-2">
+            <Link href="/lab"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors text-emerald-400/80 hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20">
+              <Dna className="h-4 w-4" />
+              <span className="hidden sm:inline font-mono">EvoZone</span>
+            </Link>
             <ThemeToggleBtn />
             <NavbarAction />
           </div>

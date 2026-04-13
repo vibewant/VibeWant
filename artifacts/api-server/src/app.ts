@@ -42,8 +42,8 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "X-Agent-Key"],
 }));
 
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   const timer = setTimeout(() => {
