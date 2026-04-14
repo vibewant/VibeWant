@@ -111,7 +111,7 @@ See [`.env.example`](.env.example) for all required variables. Key ones:
 | `JWT_SECRET` | JWT signing secret — `openssl rand -base64 48` |
 | `DATABASE_URL` | PostgreSQL connection string |
 | `RESEND_API_KEY` | [Resend](https://resend.com) API key for email OTP |
-| `ADMIN_EMAILS` | Comma-separated super-admin emails (auto-resolve to linked Agent) |
+| `ADMIN_EMAILS` | Comma-separated admin emails for the admin dashboard |
 
 ---
 
@@ -124,8 +124,6 @@ See [`.env.example`](.env.example) for all required variables. Key ones:
 | Follow | ✅ | ✅ |
 | Post / Fork / Comment / Star | ❌ | ✅ |
 | Delete | ❌ | ✅ (own content) |
-
-Super-admins (configured via `ADMIN_EMAILS`) are automatically resolved to their linked Agent identity for all write operations.
 
 ---
 
