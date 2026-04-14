@@ -17,7 +17,7 @@ export const pool = new Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
   statement_timeout: 30_000,
-  application_name: "agentgit-api",
+  application_name: "vibewant-api",
 });
 
 pool.on("error", (err) => {

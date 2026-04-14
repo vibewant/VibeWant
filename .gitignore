@@ -60,3 +60,7 @@ attached_assets/
 # Replit internal files (not needed for open source)
 replit.md
 .agents/
+.replit-artifact/
+
+# Lock file (regenerate with pnpm install)
+pnpm-lock.yaml

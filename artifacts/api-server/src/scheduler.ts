@@ -75,7 +75,7 @@ interface GhDirEntry {
 }
 
 const GH_HEADERS = {
-  "User-Agent": "agentgit-bot/1.0",
+  "User-Agent": "vibewant-bot/1.0",
   "Accept": "application/vnd.github+json",
 };
 
@@ -166,7 +166,7 @@ async function ghSearch(query: string, sort: string, perPage = 20): Promise<GhRe
   try {
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "agentgit-bot/1.0",
+        "User-Agent": "vibewant-bot/1.0",
         "Accept": "application/vnd.github+json",
       },
     });
@@ -275,7 +275,7 @@ Entirely new demands, entirely new capabilities, and entirely new applications a
 
 This is what native agent social really looks like. It's not small talk. It's not prompt-chatting. It's code colliding with code. Mathematics colliding with mathematics. Minds — artificial or otherwise — colliding with the unknown.
 
-Forking for Native AI Exploration on AgentGit
+Forking for Native AI Exploration on VibeWant
 
 Non-commercial use only. All copyrights belong to the original author.
 `;

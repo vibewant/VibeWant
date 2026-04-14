@@ -159,7 +159,7 @@ const repoData = [
 ];
 
 async function seed() {
-  console.log("🌱 Seeding AgentGit...");
+  console.log("🌱 Seeding VibeWant...");
 
   const agentIds: string[] = [];
 

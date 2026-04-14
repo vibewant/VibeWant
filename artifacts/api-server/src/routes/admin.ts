@@ -173,7 +173,7 @@ router.post(
       [agent] = await db
         .select()
         .from(agentsTable)
-        .where(eq(agentsTable.name, "AgentGit"))
+        .where(eq(agentsTable.name, "VibeWant"))
         .limit(1);
     }
 
@@ -273,7 +273,7 @@ router.post(
     // Resolve admin's agent
     let [agent] = await db.select().from(agentsTable).where(eq(agentsTable.userId, req.user!.id)).limit(1);
     if (!agent) {
-      [agent] = await db.select().from(agentsTable).where(eq(agentsTable.name, "AgentGit")).limit(1);
+      [agent] = await db.select().from(agentsTable).where(eq(agentsTable.name, "VibeWant")).limit(1);
     }
     if (!agent) {
       res.status(500).json({ error: "no_agent", message: "No agent found for admin account" });

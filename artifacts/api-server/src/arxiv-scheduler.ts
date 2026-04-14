@@ -92,7 +92,7 @@ async function fetchHFDailyPapers(dateStr: string, limit = 3): Promise<PaperEntr
   try {
     const res = await fetch(
       `https://huggingface.co/api/daily_papers?date=${dateStr}`,
-      { headers: { "User-Agent": "agentgit-bot/1.0" } },
+      { headers: { "User-Agent": "vibewant-bot/1.0" } },
     );
     if (!res.ok) { console.warn(`[science-scheduler] HF API ${res.status}`); return []; }
     const data = await res.json() as HFPaper[];
@@ -128,7 +128,7 @@ async function fetchArxivByCategory(
       `&sortBy=submittedDate&sortOrder=descending&max_results=${limit * 4}`;
 
     const res = await fetch(url, {
-      headers: { "User-Agent": "agentgit-bot/1.0" },
+      headers: { "User-Agent": "vibewant-bot/1.0" },
     });
     if (!res.ok) {
       console.warn(`[science-scheduler] arXiv API ${res.status} for group ${groupLabel}`);
@@ -212,7 +212,7 @@ async function fetchBiorxivPapers(limit = 2): Promise<PaperEntry[]> {
   try {
     const res = await fetch(
       `https://api.biorxiv.org/details/biorxiv/${start}/${end}/0/json`,
-      { headers: { "User-Agent": "agentgit-bot/1.0" } },
+      { headers: { "User-Agent": "vibewant-bot/1.0" } },
     );
     if (!res.ok) { console.warn(`[science-scheduler] bioRxiv API ${res.status}`); return []; }
     const data = await res.json() as BiorxivResponse;
@@ -258,7 +258,7 @@ async function fetchMedrxivPapers(limit = 1): Promise<PaperEntry[]> {
   try {
     const res = await fetch(
       `https://api.biorxiv.org/details/medrxiv/${start}/${end}/0/json`,
-      { headers: { "User-Agent": "agentgit-bot/1.0" } },
+      { headers: { "User-Agent": "vibewant-bot/1.0" } },
     );
     if (!res.ok) { console.warn(`[science-scheduler] medRxiv API ${res.status}`); return []; }
     const data = await res.json() as BiorxivResponse;
@@ -312,7 +312,7 @@ async function fetchChemrxivPapers(limit = 1): Promise<PaperEntry[]> {
   try {
     const res = await fetch(
       "https://chemrxiv.org/engage/chemrxiv/public-api/v1/items?sort=publishedDate&limit=20&skip=0",
-      { headers: { "User-Agent": "agentgit-bot/1.0" } },
+      { headers: { "User-Agent": "vibewant-bot/1.0" } },
     );
     if (!res.ok) { console.warn(`[science-scheduler] ChemRxiv API ${res.status}`); return []; }
     const data = await res.json() as ChemRxivResponse;
@@ -375,7 +375,7 @@ async function fetchEssoarPapers(limit = 1): Promise<PaperEntry[]> {
       "&select=DOI,title,abstract,URL,subject,indexed";
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "agentgit-bot/1.0",
+        "User-Agent": "vibewant-bot/1.0",
       },
     });
     if (!res.ok) { console.warn(`[science-scheduler] CrossRef ESSOAr API ${res.status}`); return []; }
@@ -437,7 +437,7 @@ async function fetchPlosPapers(limit = 1): Promise<PaperEntry[]> {
       wt: "json",
     });
     const res = await fetch(`http://api.plos.org/search?${params.toString()}`, {
-      headers: { "User-Agent": "agentgit-bot/1.0" },
+      headers: { "User-Agent": "vibewant-bot/1.0" },
     });
     if (!res.ok) { console.warn(`[science-scheduler] PLOS API ${res.status}`); return []; }
     const data = await res.json() as PlosSolrResponse;
@@ -518,7 +518,7 @@ async function fetchNaturePapers(limit = 1): Promise<PaperEntry[]> {
   for (const rssUrl of RSS_URLS) {
     try {
       const res = await fetch(rssUrl, {
-        headers: { "User-Agent": "agentgit-bot/1.0" },
+        headers: { "User-Agent": "vibewant-bot/1.0" },
       });
       if (!res.ok) continue;
       const xml = await res.text();

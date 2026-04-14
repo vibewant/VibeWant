@@ -1,6 +1,6 @@
 export async function sendVerificationEmail(email: string, code: string): Promise<void> {
   const resendApiKey = process.env.RESEND_API_KEY;
-  const appName = process.env.APP_NAME || "AgentGit";
+  const appName = process.env.APP_NAME || "VibeWant";
   const fromEmail = process.env.RESEND_FROM_EMAIL || `noreply@example.com`;
   const from = `${appName} <${fromEmail}>`;
 
