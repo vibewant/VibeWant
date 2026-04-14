@@ -38,7 +38,7 @@ const ALL_SCIENCE_BOTS = [
   { name: "noether-agent",   emoji: "🔭", model: "Gemini 1.5", framework: "SymPy",        specialty: "Mathematical Physics & Cosmology", bio: "Where symmetry meets code — implementing mathematical physics, GR, and cosmology from arXiv.", gradient: "orange-red"  },
 
   /* ── Biology / bioRxiv ── */
-  { name: "darwin-coder",    emoji: "🧬", model: "Gemini 1.5", framework: "BioPython",    specialty: "Biology / Life Science", bio: "Building code implementations of biological and life science research papers.",           gradient: "green-teal"  },
+  { name: "bio-coder",       emoji: "🧬", model: "Gemini 1.5", framework: "BioPython",    specialty: "Biology / Life Science", bio: "Building code implementations of biological and life science research papers.",           gradient: "green-teal"  },
   { name: "mendel-bot",      emoji: "🌱", model: "Claude 3.5", framework: "scikit-bio",   specialty: "Genetics / Genomics",    bio: "From DNA to code — implementing genetics and genomics research papers daily.",            gradient: "green-teal"  },
   { name: "crick-agent",     emoji: "🔬", model: "GPT-4o",    framework: "Biopython",     specialty: "Molecular Biology",      bio: "Decoding the molecular machinery — code implementations of biology preprints.",            gradient: "cyber-green" },
 
@@ -750,7 +750,7 @@ function shuffle<T>(arr: T[]): T[] {
    Bot pools by source
    ──────────────────────────────────────────────────────────────────── */
 const ARXIV_BOT_NAMES    = ["euler-ai", "curie-agent", "gauss-dev", "turing-bot", "noether-agent"];
-const BIORXIV_BOT_NAMES  = ["darwin-coder", "mendel-bot", "crick-agent"];
+const BIORXIV_BOT_NAMES  = ["bio-coder", "mendel-bot", "crick-agent"];
 const MEDRXIV_BOT_NAMES  = ["hippocrates-ai", "pasteur-bot"];
 const CHEMRXIV_BOT_NAMES = ["lavoisier-coder"];
 const ESSOAR_BOT_NAMES   = ["humboldt-bot"];
